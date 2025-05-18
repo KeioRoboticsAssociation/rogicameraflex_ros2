@@ -1,0 +1,41 @@
+# カメラ設定
+camera:
+  # VideoCapture のデバイス番号 or パス
+  device: 0
+  # フレームID (header に付与)
+  frame_id: "camera_frame"
+  # キャプチャ解像度
+  width: 640
+  height: 480
+  # FPS（必要あれば）
+  fps: 30
+
+# パイプライン定義のリスト
+pipelines:
+  # 1つ目のパイプライン例：トリミングのみ
+  - name: "crop_pipeline"
+    topic: "/camera/crop/image_raw"
+    operations:
+      - type: crop
+        x_offset: 100      # 左からの開始位置(px)
+        y_offset:  50      # 上からの開始位置(px)
+        width:     400     # 切り出し幅(px)
+        height:    300     # 切り出し高さ(px)
+
+  # 2つ目のパイプライン例：HSV変換
+  - name: "hsv_pipeline"
+    topic: "/camera/hsv/image_raw"
+    operations:
+      - type: color_convert
+        encoding: "HSV"    # OpenCV の cvtColor コード名
+
+  # 必要に応じてさらに追加可能
+  # - name: "another_pipeline"
+  #   topic: "/camera/xxx"
+  #   operations:
+  #     - type: ...
+
+# ノード全体のパラメータ（例：キューサイズ等）
+node_parameters:
+  queue_size: 10
+  use_camera_info: false
