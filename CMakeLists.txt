@@ -18,6 +18,7 @@ find_package(OpenCV REQUIRED)
 include_directories(
   include
   ${OpenCV_INCLUDE_DIRS}
+  ${YAML_CPP_INCLUDE_DIRS}
 )
 
 # 実行ファイルの追加
@@ -32,12 +33,12 @@ ament_target_dependencies(camera_flex_node
   sensor_msgs
   cv_bridge
   image_transport
-  yaml-cpp
 )
 
-# OpenCV ライブラリのリンク
+# ライブラリのリンク
 target_link_libraries(camera_flex_node
   ${OpenCV_LIBRARIES}
+  yaml-cpp
 )
 
 # インストール設定

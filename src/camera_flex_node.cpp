@@ -58,8 +58,7 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
 
   // タイマーで定期的にフレーム取得＆パブリッシュ
   auto period = std::chrono::milliseconds(1000 / fps_);
-  timer_ = this->create_wall_timer((
-    period, std::bind(&CameraFlexNode::captureLoop, this));
+  timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
 }
 
 void CameraFlexNode::captureLoop()
