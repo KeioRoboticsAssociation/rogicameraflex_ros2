@@ -33,8 +33,7 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
   // ノードパラメータ
   int queue_size = config["node_parameters"]["queue_size"].as<int>(10);
 
-    // パイプライン設定解析
-  image_transport::ImageTransport it(this->shared_from_this());
+  // パイプライン設定解析
   YAML::Node pipelines_node = config["pipelines"];
   for (std::size_t i = 0; i < pipelines_node.size(); ++i) {
     YAML::Node pipe_node = pipelines_node[i];
@@ -52,13 +51,34 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
       p.operations.push_back(op);
     }
 
-    p.publisher = it.advertise(p.topic, queue_size);
     pipelines_.push_back(std::move(p));
   }
 
-  // タイマーで定期的にフレーム取得＆パブリッシュ
-  auto period = std::chrono::milliseconds(1000 / fps_);
-  timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
+  // コンストラクタ後に初期化処理を遅延実行
+  // これにより shared_from_this() が安全に使用できる
+  auto init_callback = [this, queue_size]() {
+    // ImageTransport を作成してパブリッシャーを初期化
+    auto it = std::make_shared<image_transport::ImageTransport>(shared_from_this());
+    
+    for (auto & pipe : pipelines_) {
+      pipe.publisher = it->advertise(pipe.topic, queue_size);
+      RCLCPP_INFO(this->get_logger(), "Created publisher for topic: %s", pipe.topic.c_str());
+    }
+
+    // タイマーで定期的にフレーム取得＆パブリッシュ
+    auto period = std::chrono::milliseconds(1000 / fps_);
+    timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
+    
+    RCLCPP_INFO(this->get_logger(), "CameraFlexNode initialization complete");
+  };
+
+  // 初期化処理を次のイベントループで実行
+  this->create_wall_timer(
+    std::chrono::milliseconds(0),
+    [this, init_callback]() {
+      init_callback();
+      return false;  // One-shot timer
+    });
 }
 
 CameraFlexNode::~CameraFlexNode()
@@ -91,17 +111,23 @@ void CameraFlexNode::captureLoop()
   }
 
   for (auto & pipe : pipelines_) {
-    cv::Mat processed = applyOperations(frame, pipe.operations);
+    // パブリッシャーが有効かチェック（初期化されていればpublishは安全）
+    try {
+      cv::Mat processed = applyOperations(frame, pipe.operations);
 
-    // CvImage から ROS メッセージへ
-    std_msgs::msg::Header hdr;
-    hdr.stamp = this->now();
-    hdr.frame_id = frame_id_;
-    auto img_msg = cv_bridge::CvImage(hdr,
-        sensor_msgs::image_encodings::BGR8, processed)
-      .toImageMsg();
+      // CvImage から ROS メッセージへ
+      std_msgs::msg::Header hdr;
+      hdr.stamp = this->now();
+      hdr.frame_id = frame_id_;
+      auto img_msg = cv_bridge::CvImage(hdr,
+          sensor_msgs::image_encodings::BGR8, processed)
+        .toImageMsg();
 
-    pipe.publisher.publish(img_msg);
+      pipe.publisher.publish(img_msg);
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR_ONCE(this->get_logger(), 
+        "Failed to publish on topic %s: %s", pipe.topic.c_str(), e.what());
+    }
   }
 }
 
@@ -116,12 +142,27 @@ cv::Mat CameraFlexNode::applyOperations(
       int y = op.params["y_offset"].as<int>();
       int w = op.params["width"].as<int>();
       int h = op.params["height"].as<int>();
-      result = result(cv::Rect(x, y, w, h)).clone();
+      
+      // 境界チェック
+      x = std::max(0, std::min(x, result.cols - 1));
+      y = std::max(0, std::min(y, result.rows - 1));
+      w = std::min(w, result.cols - x);
+      h = std::min(h, result.rows - y);
+      
+      if (w > 0 && h > 0) {
+        result = result(cv::Rect(x, y, w, h)).clone();
+      } else {
+        RCLCPP_WARN(this->get_logger(), "Invalid crop region, skipping crop operation");
+      }
 
     } else if (op.type == "resize") {
       int w = op.params["width"].as<int>();
       int h = op.params["height"].as<int>();
-      cv::resize(result, result, cv::Size(w, h));
+      if (w > 0 && h > 0) {
+        cv::resize(result, result, cv::Size(w, h));
+      } else {
+        RCLCPP_WARN(this->get_logger(), "Invalid resize dimensions, skipping resize operation");
+      }
 
     } else if (op.type == "color_convert") {
       std::string enc = op.params["encoding"].as<std::string>();
@@ -129,6 +170,8 @@ cv::Mat CameraFlexNode::applyOperations(
         cv::cvtColor(result, result, cv::COLOR_BGR2HSV);
       } else if (enc == "GRAY") {
         cv::cvtColor(result, result, cv::COLOR_BGR2GRAY);
+        // グレースケールの場合、BGR8として扱うために3チャンネルに戻す
+        cv::cvtColor(result, result, cv::COLOR_GRAY2BGR);
       }
     }
     // 他の操作もここに追加可能
