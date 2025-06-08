@@ -29,6 +29,7 @@ class CameraFlexNode : public rclcpp::Node
 {
 public:
   explicit CameraFlexNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  ~CameraFlexNode();
 
 private:
   void captureLoop();
