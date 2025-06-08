@@ -61,6 +61,27 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
   timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
 }
 
+CameraFlexNode::~CameraFlexNode()
+{
+  RCLCPP_INFO(this->get_logger(), "Shutting down CameraFlexNode...");
+  if (timer_) {
+    timer_->cancel();
+    timer_.reset();
+    RCLCPP_INFO(this->get_logger(), "Timer reset.");
+  }
+
+  // Clear pipelines before releasing the camera
+  // This ensures publishers are destroyed first
+  pipelines_.clear();
+  RCLCPP_INFO(this->get_logger(), "Pipelines cleared.");
+
+  if (cap_.isOpened()) {
+    cap_.release();
+    RCLCPP_INFO(this->get_logger(), "Camera capture released.");
+  }
+  RCLCPP_INFO(this->get_logger(), "CameraFlexNode shutdown complete.");
+}
+
 void CameraFlexNode::captureLoop()
 {
   cv::Mat frame;
