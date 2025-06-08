@@ -74,6 +74,8 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
     // ImageTransport を作成してパブリッシャーを初期化
     auto it = std::make_shared<image_transport::ImageTransport>(shared_from_this());
     
+    RCLCPP_INFO(this->get_logger(), "Initializing %zu pipelines", pipelines_.size());
+    
     for (auto & pipe : pipelines_) {
       pipe.publisher = it->advertise(pipe.topic, queue_size);
       RCLCPP_INFO(this->get_logger(), "Created publisher for topic: %s", pipe.topic.c_str());
@@ -83,6 +85,7 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
     auto period = std::chrono::milliseconds(1000 / fps_);
     timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
     
+    RCLCPP_INFO(this->get_logger(), "Timer created with period: %d ms", 1000 / fps_);
     RCLCPP_INFO(this->get_logger(), "CameraFlexNode initialization complete");
   };
 
@@ -118,10 +121,23 @@ CameraFlexNode::~CameraFlexNode()
 
 void CameraFlexNode::captureLoop()
 {
+  static int frame_count = 0;
   cv::Mat frame;
   if (!cap_.read(frame)) {
     RCLCPP_WARN(this->get_logger(), "Failed to capture frame");
     return;
+  }
+  
+  // フレームが正常に取得できたかチェック
+  if (frame.empty()) {
+    RCLCPP_WARN(this->get_logger(), "Captured frame is empty");
+    return;
+  }
+  
+  // 10フレームごとにログ出力
+  if (++frame_count % 10 == 0) {
+    RCLCPP_INFO(this->get_logger(), 
+      "Captured frame %d: %dx%d", frame_count, frame.cols, frame.rows);
   }
 
   for (auto & pipe : pipelines_) {
@@ -138,6 +154,12 @@ void CameraFlexNode::captureLoop()
         .toImageMsg();
 
       pipe.publisher.publish(img_msg);
+      
+      // 最初の数フレームはログ出力
+      if (frame_count <= 5) {
+        RCLCPP_INFO(this->get_logger(), 
+          "Published frame to %s", pipe.topic.c_str());
+      }
     } catch (const std::exception& e) {
       RCLCPP_ERROR_ONCE(this->get_logger(), 
         "Failed to publish on topic %s: %s", pipe.topic.c_str(), e.what());
