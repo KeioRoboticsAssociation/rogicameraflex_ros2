@@ -5,8 +5,8 @@ camera:
   # フレームID (header に付与)
   frame_id: "camera_frame"
   # キャプチャ解像度
-  width: 640
-  height: 480
+  width: 1920
+  height: 1080
   # FPS（必要あれば）
   fps: 30
 
