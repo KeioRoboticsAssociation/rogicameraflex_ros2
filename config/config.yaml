@@ -12,28 +12,16 @@ camera:
 
 # パイプライン定義のリスト
 pipelines:
-  # 1つ目のパイプライン例：トリミングのみ
-  - name: "crop_pipeline"
-    topic: "/camera/crop/image_raw"
-    operations:
-      - type: crop
-        x_offset: 100      # 左からの開始位置(px)
-        y_offset:  50      # 上からの開始位置(px)
-        width:     400     # 切り出し幅(px)
-        height:    300     # 切り出し高さ(px)
 
-  # 2つ目のパイプライン例：HSV変換
-  - name: "hsv_pipeline"
-    topic: "/camera/hsv/image_raw"
+  # image_detector用のパイプライン：リサイズ→HSV変換
+  - name: "resize_hsv_pipeline"
+    topic: "/camera/resize_hsv/image_raw"
     operations:
+      - type: resize
+        width: 640         # 処理しやすいサイズにリサイズ
+        height: 480
       - type: color_convert
-        encoding: "HSV"    # OpenCV の cvtColor コード名
-
-  # 必要に応じてさらに追加可能
-  # - name: "another_pipeline"
-  #   topic: "/camera/xxx"
-  #   operations:
-  #     - type: ...
+        encoding: "HSV"    # HSV色空間に変換
 
 # ノード全体のパラメータ（例：キューサイズ等）
 node_parameters:
