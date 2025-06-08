@@ -20,15 +20,29 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
   height_      = cam["height"].as<int>();
   fps_         = cam["fps"].as<int>(30);
 
-  cap_.open(device);
+  // V4L2バックエンドを明示的に使用してGStreamer警告を回避
+  cap_.open(device, cv::CAP_V4L2);
   if (!cap_.isOpened()) {
-    RCLCPP_FATAL(this->get_logger(), "Failed to open camera device: %d", device);
-    rclcpp::shutdown();
-    return;
+    // V4L2が失敗した場合、デフォルトバックエンドで再試行
+    RCLCPP_WARN(this->get_logger(), "Failed to open camera with V4L2, trying default backend");
+    cap_.open(device);
+    if (!cap_.isOpened()) {
+      RCLCPP_FATAL(this->get_logger(), "Failed to open camera device: %d", device);
+      rclcpp::shutdown();
+      return;
+    }
   }
   cap_.set(cv::CAP_PROP_FRAME_WIDTH,  width_);
   cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height_);
   cap_.set(cv::CAP_PROP_FPS,          fps_);
+  
+  // 実際の設定値を確認
+  int actual_width = cap_.get(cv::CAP_PROP_FRAME_WIDTH);
+  int actual_height = cap_.get(cv::CAP_PROP_FRAME_HEIGHT);
+  int actual_fps = cap_.get(cv::CAP_PROP_FPS);
+  RCLCPP_INFO(this->get_logger(), 
+    "Camera opened successfully. Resolution: %dx%d, FPS: %d", 
+    actual_width, actual_height, actual_fps);
 
   // ノードパラメータ
   int queue_size = config["node_parameters"]["queue_size"].as<int>(10);
