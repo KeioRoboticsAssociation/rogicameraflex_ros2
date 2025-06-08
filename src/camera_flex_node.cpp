@@ -9,8 +9,17 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
     "/home/imanoob/ros2_ws/src/rogicameraflex_ros/config/config.yaml");
   this->get_parameter("config_file", config_file);
 
+  RCLCPP_INFO(this->get_logger(), "Loading config from: %s", config_file.c_str());
+
   // YAML 読み込み
-  YAML::Node config = YAML::LoadFile(config_file);
+  YAML::Node config;
+  try {
+    config = YAML::LoadFile(config_file);
+  } catch (const std::exception& e) {
+    RCLCPP_FATAL(this->get_logger(), "Failed to load config file: %s", e.what());
+    rclcpp::shutdown();
+    return;
+  }
 
   // カメラ設定解析
   auto cam = config["camera"];
@@ -32,6 +41,7 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
       return;
     }
   }
+  
   cap_.set(cv::CAP_PROP_FRAME_WIDTH,  width_);
   cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height_);
   cap_.set(cv::CAP_PROP_FPS,          fps_);
@@ -41,11 +51,21 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
   int actual_height = cap_.get(cv::CAP_PROP_FRAME_HEIGHT);
   int actual_fps = cap_.get(cv::CAP_PROP_FPS);
   RCLCPP_INFO(this->get_logger(), 
-    "Camera opened successfully. Resolution: %dx%d, FPS: %d", 
-    actual_width, actual_height, actual_fps);
+    "Camera opened successfully. Resolution: %dx%d, FPS: %d (requested: %d)", 
+    actual_width, actual_height, actual_fps, fps_);
+  
+  // FPSが低すぎる場合は、設定値を使用
+  if (actual_fps < 10) {
+    RCLCPP_WARN(this->get_logger(), 
+      "Camera reported low FPS (%d), using requested FPS (%d) for timer", 
+      actual_fps, fps_);
+    // fps_ はそのまま使用（YAMLの設定値）
+  } else {
+    fps_ = actual_fps;  // カメラの実際のFPSを使用
+  }
 
   // ノードパラメータ
-  int queue_size = config["node_parameters"]["queue_size"].as<int>(10);
+  queue_size_ = config["node_parameters"]["queue_size"].as<int>(10);
 
   // パイプライン設定解析
   YAML::Node pipelines_node = config["pipelines"];
@@ -66,41 +86,54 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
     }
 
     pipelines_.push_back(std::move(p));
+    RCLCPP_INFO(this->get_logger(), "Added pipeline: %s -> %s", 
+      pipelines_.back().name.c_str(), pipelines_.back().topic.c_str());
   }
 
-  // コンストラクタ後に初期化処理を遅延実行
-  // これにより shared_from_this() が安全に使用できる
-  auto init_callback = [this, queue_size]() {
-    // ImageTransport を作成してパブリッシャーを初期化
-    auto it = std::make_shared<image_transport::ImageTransport>(shared_from_this());
-    
-    RCLCPP_INFO(this->get_logger(), "Initializing %zu pipelines", pipelines_.size());
-    
-    for (auto & pipe : pipelines_) {
-      pipe.publisher = it->advertise(pipe.topic, queue_size);
-      RCLCPP_INFO(this->get_logger(), "Created publisher for topic: %s", pipe.topic.c_str());
-    }
+  // 初期化タイマーを作成（100ms後に初期化）
+  init_timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(100),
+    std::bind(&CameraFlexNode::initialize, this));
+}
 
-    // タイマーで定期的にフレーム取得＆パブリッシュ
-    auto period = std::chrono::milliseconds(1000 / fps_);
-    timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
-    
-    RCLCPP_INFO(this->get_logger(), "Timer created with period: %d ms", 1000 / fps_);
-    RCLCPP_INFO(this->get_logger(), "CameraFlexNode initialization complete");
-  };
+void CameraFlexNode::initialize()
+{
+  if (initialized_) {
+    return;
+  }
+  initialized_ = true;
+  
+  // 初期化タイマーを停止
+  init_timer_->cancel();
+  
+  RCLCPP_INFO(this->get_logger(), "Starting initialization...");
+  
+  // ImageTransport を作成してパブリッシャーを初期化
+  it_ = std::make_shared<image_transport::ImageTransport>(shared_from_this());
+  
+  RCLCPP_INFO(this->get_logger(), "Initializing %zu pipelines", pipelines_.size());
+  
+  for (auto & pipe : pipelines_) {
+    pipe.publisher = it_->advertise(pipe.topic, queue_size_);
+    RCLCPP_INFO(this->get_logger(), "Created publisher for topic: %s", pipe.topic.c_str());
+  }
 
-  // 初期化処理を次のイベントループで実行
-  this->create_wall_timer(
-    std::chrono::milliseconds(0),
-    [this, init_callback]() {
-      init_callback();
-      return false;  // One-shot timer
-    });
+  // タイマーで定期的にフレーム取得＆パブリッシュ
+  auto period = std::chrono::milliseconds(1000 / fps_);
+  timer_ = this->create_wall_timer(period, std::bind(&CameraFlexNode::captureLoop, this));
+  
+  RCLCPP_INFO(this->get_logger(), "Timer created with period: %d ms", 1000 / fps_);
+  RCLCPP_INFO(this->get_logger(), "CameraFlexNode initialization complete");
 }
 
 CameraFlexNode::~CameraFlexNode()
 {
   RCLCPP_INFO(this->get_logger(), "Shutting down CameraFlexNode...");
+  
+  if (init_timer_) {
+    init_timer_->cancel();
+  }
+  
   if (timer_) {
     timer_->cancel();
     timer_.reset();

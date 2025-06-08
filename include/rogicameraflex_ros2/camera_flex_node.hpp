@@ -32,18 +32,23 @@ public:
   ~CameraFlexNode();
 
 private:
+  void initialize();  // 初期化メソッドを追加
   void captureLoop();
   cv::Mat applyOperations(const cv::Mat & frame, const std::vector<Operation> & ops);
 
   cv::VideoCapture cap_;
   std::vector<Pipeline> pipelines_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr init_timer_;  // 初期化用タイマー
+  std::shared_ptr<image_transport::ImageTransport> it_;  // ImageTransportをメンバ変数に
 
   // カメラ設定
   std::string frame_id_;
   int width_;
   int height_;
   int fps_;
+  int queue_size_;
+  bool initialized_ = false;  // 初期化フラグ
 };
 
 #endif  // ROGICAMERAFLEX_ROS2_CAMERA_FLEX_NODE_HPP_
