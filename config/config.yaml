@@ -23,6 +23,13 @@ pipelines:
       - type: color_convert
         encoding: "HSV"    # HSV色空間に変換
 
+  - name: "raw_pipeline"
+    topic: "/camera/image_raw"
+    operations:
+      - type: resize
+        width: 640         # 処理しやすいサイズにリサイズ
+        height: 480
+
 # ノード全体のパラメータ（例：キューサイズ等）
 node_parameters:
   queue_size: 10
