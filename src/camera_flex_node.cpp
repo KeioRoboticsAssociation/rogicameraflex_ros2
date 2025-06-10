@@ -42,26 +42,34 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions & options)
     }
   }
   
+  // カメラの設定
   cap_.set(cv::CAP_PROP_FRAME_WIDTH,  width_);
   cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height_);
   cap_.set(cv::CAP_PROP_FPS,          fps_);
+  
+  // カメラの色空間情報を取得・表示
+  double fourcc = cap_.get(cv::CAP_PROP_FOURCC);
+  char fourcc_str[5] = {0};
+  memcpy(fourcc_str, &fourcc, 4);
   
   // 実際の設定値を確認
   int actual_width = cap_.get(cv::CAP_PROP_FRAME_WIDTH);
   int actual_height = cap_.get(cv::CAP_PROP_FRAME_HEIGHT);
   int actual_fps = cap_.get(cv::CAP_PROP_FPS);
+  
   RCLCPP_INFO(this->get_logger(), 
     "Camera opened successfully. Resolution: %dx%d, FPS: %d (requested: %d)", 
     actual_width, actual_height, actual_fps, fps_);
+  RCLCPP_INFO(this->get_logger(), 
+    "Camera FOURCC format: %s", fourcc_str);
   
   // FPSが低すぎる場合は、設定値を使用
   if (actual_fps < 10) {
     RCLCPP_WARN(this->get_logger(), 
       "Camera reported low FPS (%d), using requested FPS (%d) for timer", 
       actual_fps, fps_);
-    // fps_ はそのまま使用（YAMLの設定値）
   } else {
-    fps_ = actual_fps;  // カメラの実際のFPSを使用
+    fps_ = actual_fps;
   }
 
   // ノードパラメータ
@@ -140,8 +148,6 @@ CameraFlexNode::~CameraFlexNode()
     RCLCPP_INFO(this->get_logger(), "Timer reset.");
   }
 
-  // Clear pipelines before releasing the camera
-  // This ensures publishers are destroyed first
   pipelines_.clear();
   RCLCPP_INFO(this->get_logger(), "Pipelines cleared.");
 
@@ -155,43 +161,87 @@ CameraFlexNode::~CameraFlexNode()
 void CameraFlexNode::captureLoop()
 {
   static int frame_count = 0;
+  static bool format_logged = false;
+  
   cv::Mat frame;
   if (!cap_.read(frame)) {
     RCLCPP_WARN(this->get_logger(), "Failed to capture frame");
     return;
   }
   
-  // フレームが正常に取得できたかチェック
   if (frame.empty()) {
     RCLCPP_WARN(this->get_logger(), "Captured frame is empty");
     return;
   }
   
-  // 10フレームごとにログ出力
-  if (++frame_count % 10 == 0) {
+  // 最初のフレームで詳細な形式情報をログ出力
+  if (!format_logged) {
     RCLCPP_INFO(this->get_logger(), 
-      "Captured frame %d: %dx%d", frame_count, frame.cols, frame.rows);
+      "Input frame info - Channels: %d, Type: %d, Size: %dx%d", 
+      frame.channels(), frame.type(), frame.cols, frame.rows);
+    
+    std::string type_str;
+    switch(frame.type()) {
+      case CV_8UC1: type_str = "CV_8UC1 (GRAY)"; break;
+      case CV_8UC3: type_str = "CV_8UC3 (RGB or BGR)"; break;
+      case CV_8UC4: type_str = "CV_8UC4 (RGBA or BGRA)"; break;
+      default: type_str = "Unknown type: " + std::to_string(frame.type()); break;
+    }
+    RCLCPP_INFO(this->get_logger(), "Frame type: %s", type_str.c_str());
+    
+    // RGB入力であることを明示
+    RCLCPP_INFO(this->get_logger(), "Assuming sRGB input format - will convert RGB to BGR for OpenCV processing");
+    
+    format_logged = true;
+  }
+  
+  // RGB to BGR変換（sRGB入力の場合）
+  cv::Mat bgr_frame;
+  if (frame.channels() == 3) {
+    cv::cvtColor(frame, bgr_frame, cv::COLOR_RGB2BGR);
+  } else if (frame.channels() == 1) {
+    // グレースケールの場合はそのまま使用
+    bgr_frame = frame.clone();
+  } else {
+    RCLCPP_WARN_ONCE(this->get_logger(), 
+      "Unsupported channel count: %d, using frame as-is", frame.channels());
+    bgr_frame = frame.clone();
+  }
+  
+  // 10フレームごとにログ出力
+  if (++frame_count % 30 == 0) {
+    RCLCPP_INFO(this->get_logger(), 
+      "Processed frame %d: %dx%d", frame_count, bgr_frame.cols, bgr_frame.rows);
   }
 
   for (auto & pipe : pipelines_) {
-    // パブリッシャーが有効かチェック（初期化されていればpublishは安全）
     try {
-      cv::Mat processed = applyOperations(frame, pipe.operations);
+      cv::Mat processed = applyOperations(bgr_frame, pipe.operations);
 
-      // CvImage から ROS メッセージへ
+      // CvImage から ROS メッセージへ（BGR形式で出力）
       std_msgs::msg::Header hdr;
       hdr.stamp = this->now();
       hdr.frame_id = frame_id_;
-      auto img_msg = cv_bridge::CvImage(hdr,
-          sensor_msgs::image_encodings::BGR8, processed)
-        .toImageMsg();
-
+      
+      std::string encoding;
+      if (processed.channels() == 3) {
+        encoding = sensor_msgs::image_encodings::BGR8;
+      } else if (processed.channels() == 1) {
+        encoding = sensor_msgs::image_encodings::MONO8;
+      } else {
+        RCLCPP_WARN_ONCE(this->get_logger(), 
+          "Unexpected channel count %d, using BGR8 encoding", processed.channels());
+        encoding = sensor_msgs::image_encodings::BGR8;
+      }
+      
+      auto img_msg = cv_bridge::CvImage(hdr, encoding, processed).toImageMsg();
       pipe.publisher.publish(img_msg);
       
       // 最初の数フレームはログ出力
-      if (frame_count <= 5) {
+      if (frame_count <= 3) {
         RCLCPP_INFO(this->get_logger(), 
-          "Published frame to %s", pipe.topic.c_str());
+          "Published frame to %s (encoding: %s, size: %dx%d)", 
+          pipe.topic.c_str(), encoding.c_str(), processed.cols, processed.rows);
       }
     } catch (const std::exception& e) {
       RCLCPP_ERROR_ONCE(this->get_logger(), 
@@ -204,6 +254,7 @@ cv::Mat CameraFlexNode::applyOperations(
   const cv::Mat & frame, const std::vector<Operation> & ops)
 {
   cv::Mat result = frame.clone();
+  static bool hsv_conversion_logged = false;
 
   for (const auto & op : ops) {
     if (op.type == "crop") {
@@ -220,6 +271,8 @@ cv::Mat CameraFlexNode::applyOperations(
       
       if (w > 0 && h > 0) {
         result = result(cv::Rect(x, y, w, h)).clone();
+        RCLCPP_DEBUG(this->get_logger(), 
+          "Applied crop: (%d,%d) %dx%d", x, y, w, h);
       } else {
         RCLCPP_WARN(this->get_logger(), "Invalid crop region, skipping crop operation");
       }
@@ -229,21 +282,57 @@ cv::Mat CameraFlexNode::applyOperations(
       int h = op.params["height"].as<int>();
       if (w > 0 && h > 0) {
         cv::resize(result, result, cv::Size(w, h));
+        RCLCPP_DEBUG(this->get_logger(), "Applied resize: %dx%d", w, h);
       } else {
         RCLCPP_WARN(this->get_logger(), "Invalid resize dimensions, skipping resize operation");
       }
 
     } else if (op.type == "color_convert") {
       std::string enc = op.params["encoding"].as<std::string>();
+      
       if (enc == "HSV") {
-        cv::cvtColor(result, result, cv::COLOR_BGR2HSV);
+        if (result.channels() == 3) {
+          // BGRからHSVに変換（入力がsRGB→BGRに変換済みなので）
+          cv::cvtColor(result, result, cv::COLOR_BGR2HSV);
+          
+          if (!hsv_conversion_logged) {
+            RCLCPP_INFO(this->get_logger(), 
+              "Applied BGR to HSV conversion. Result: %dx%d, %d channels", 
+              result.cols, result.rows, result.channels());
+            
+            // サンプルピクセルでの変換確認（デバッグ用）
+            if (result.rows > 100 && result.cols > 100) {
+              cv::Vec3b hsv_pixel = result.at<cv::Vec3b>(100, 100);
+              RCLCPP_INFO(this->get_logger(), 
+                "Sample HSV pixel at (100,100): H=%d, S=%d, V=%d", 
+                hsv_pixel[0], hsv_pixel[1], hsv_pixel[2]);
+            }
+            hsv_conversion_logged = true;
+          }
+        } else {
+          RCLCPP_WARN_ONCE(this->get_logger(), 
+            "Cannot convert to HSV: input is not 3-channel (%d channels)", 
+            result.channels());
+        }
+        
       } else if (enc == "GRAY") {
-        cv::cvtColor(result, result, cv::COLOR_BGR2GRAY);
-        // グレースケールの場合、BGR8として扱うために3チャンネルに戻す
-        cv::cvtColor(result, result, cv::COLOR_GRAY2BGR);
+        if (result.channels() == 3) {
+          cv::cvtColor(result, result, cv::COLOR_BGR2GRAY);
+          // ROSのimage_transportのため、グレースケールのままにしておく
+          RCLCPP_DEBUG(this->get_logger(), "Applied BGR to GRAY conversion");
+        } else {
+          RCLCPP_DEBUG(this->get_logger(), "Image is already grayscale, skipping conversion");
+        }
+        
+      } else {
+        RCLCPP_WARN_ONCE(this->get_logger(), 
+          "Unsupported color encoding: %s", enc.c_str());
       }
+    } else {
+      RCLCPP_WARN_ONCE(this->get_logger(), 
+        "Unknown operation type: %s", op.type.c_str());
     }
-    // 他の操作もここに追加可能
   }
+  
   return result;
 }
