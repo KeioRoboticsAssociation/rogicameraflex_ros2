@@ -162,6 +162,7 @@ void CameraFlexNode::captureLoop()
 {
   static int frame_count = 0;
   static bool format_logged = false;
+  static bool bgr_test_done = false;  // BGR確認用フラグ
   
   cv::Mat frame;
   if (!cap_.read(frame)) {
@@ -174,6 +175,122 @@ void CameraFlexNode::captureLoop()
     return;
   }
   
+  // BGR形式確認用のテスト（最初の数フレームでのみ実行）
+  if (!bgr_test_done && frame_count < 5) {
+    RCLCPP_INFO(this->get_logger(), "=== BGR Format Verification Test ===");
+    
+    // フレーム情報の詳細表示
+    RCLCPP_INFO(this->get_logger(), 
+      "Raw frame info - Size: %dx%d, Channels: %d, Type: %d, Depth: %d", 
+      frame.cols, frame.rows, frame.channels(), frame.type(), frame.depth());
+    
+    // カメラの内部フォーマット情報
+    double fourcc = cap_.get(cv::CAP_PROP_FOURCC);
+    char fourcc_str[5] = {0};
+    memcpy(fourcc_str, &fourcc, 4);
+    RCLCPP_INFO(this->get_logger(), "Camera FOURCC: %s (0x%08X)", fourcc_str, (uint32_t)fourcc);
+    
+    // サンプルピクセルの値を確認（中央付近）
+    if (frame.channels() == 3 && frame.rows > 200 && frame.cols > 200) {
+      int test_x = frame.cols / 2;
+      int test_y = frame.rows / 2;
+      cv::Vec3b pixel = frame.at<cv::Vec3b>(test_y, test_x);
+      
+      RCLCPP_INFO(this->get_logger(), 
+        "Sample pixel at (%d,%d): [%d, %d, %d]", 
+        test_x, test_y, pixel[0], pixel[1], pixel[2]);
+      
+      // RGB/BGR判定のためのヒューリスティック
+      // 一般的に、自然画像では赤成分よりも青成分の方が小さい傾向にある
+      // もしpixel[0]が青でpixel[2]が赤なら、通常pixel[0] < pixel[2]
+      RCLCPP_INFO(this->get_logger(), 
+        "Channel analysis: Ch0=%d, Ch1=%d, Ch2=%d", 
+        pixel[0], pixel[1], pixel[2]);
+      
+      // 複数点でサンプリング
+      int total_ch0 = 0, total_ch1 = 0, total_ch2 = 0;
+      int sample_count = 0;
+      
+      for (int y = 50; y < frame.rows - 50; y += 100) {
+        for (int x = 50; x < frame.cols - 50; x += 100) {
+          cv::Vec3b p = frame.at<cv::Vec3b>(y, x);
+          total_ch0 += p[0];
+          total_ch1 += p[1];
+          total_ch2 += p[2];
+          sample_count++;
+        }
+      }
+      
+      if (sample_count > 0) {
+        double avg_ch0 = (double)total_ch0 / sample_count;
+        double avg_ch1 = (double)total_ch1 / sample_count;
+        double avg_ch2 = (double)total_ch2 / sample_count;
+        
+        RCLCPP_INFO(this->get_logger(), 
+          "Average pixel values across %d samples: Ch0=%.1f, Ch1=%.1f, Ch2=%.1f", 
+          sample_count, avg_ch0, avg_ch1, avg_ch2);
+        
+        // BGR判定のヒント
+        RCLCPP_INFO(this->get_logger(), 
+          "Format hint: If this is BGR, Ch0=Blue, Ch1=Green, Ch2=Red");
+        RCLCPP_INFO(this->get_logger(), 
+          "Format hint: If this is RGB, Ch0=Red, Ch1=Green, Ch2=Blue");
+      }
+      
+      // HSV変換テスト
+      cv::Mat hsv_test;
+      cv::cvtColor(frame, hsv_test, cv::COLOR_BGR2HSV);
+      cv::Vec3b hsv_pixel = hsv_test.at<cv::Vec3b>(test_y, test_x);
+      
+      RCLCPP_INFO(this->get_logger(), 
+        "BGR->HSV conversion result: H=%d, S=%d, V=%d", 
+        hsv_pixel[0], hsv_pixel[1], hsv_pixel[2]);
+      
+      // RGB->HSV変換との比較
+      cv::Mat hsv_test_rgb;
+      cv::cvtColor(frame, hsv_test_rgb, cv::COLOR_RGB2HSV);
+      cv::Vec3b hsv_pixel_rgb = hsv_test_rgb.at<cv::Vec3b>(test_y, test_x);
+      
+      RCLCPP_INFO(this->get_logger(), 
+        "RGB->HSV conversion result: H=%d, S=%d, V=%d", 
+        hsv_pixel_rgb[0], hsv_pixel_rgb[1], hsv_pixel_rgb[2]);
+      
+      // 色相(Hue)の違いで判定
+      int hue_diff = abs(hsv_pixel[0] - hsv_pixel_rgb[0]);
+      if (hue_diff > 60) {  // 色相の差が大きい場合
+        RCLCPP_INFO(this->get_logger(), 
+          "Large hue difference (%d) detected - indicates format matters for color accuracy", 
+          hue_diff);
+      }
+    }
+    
+    // テスト画像を保存（デバッグ用）
+    if (frame_count == 1) {
+      // 元画像を保存
+      cv::imwrite("/tmp/debug_original.jpg", frame);
+      
+      // BGR->RGB変換して保存
+      cv::Mat rgb_frame;
+      cv::cvtColor(frame, rgb_frame, cv::COLOR_BGR2RGB);
+      cv::imwrite("/tmp/debug_bgr2rgb.jpg", rgb_frame);
+      
+      // RGB->BGR変換して保存
+      cv::Mat bgr_frame;
+      cv::cvtColor(frame, bgr_frame, cv::COLOR_RGB2BGR);
+      cv::imwrite("/tmp/debug_rgb2bgr.jpg", bgr_frame);
+      
+      RCLCPP_INFO(this->get_logger(), 
+        "Debug images saved: /tmp/debug_original.jpg, /tmp/debug_bgr2rgb.jpg, /tmp/debug_rgb2bgr.jpg");
+      RCLCPP_INFO(this->get_logger(), 
+        "Compare these images to determine the correct input format");
+    }
+    
+    // テスト完了フラグを設定
+    if (frame_count >= 3) {
+      bgr_test_done = true;
+      RCLCPP_INFO(this->get_logger(), "=== BGR Format Verification Complete ===");
+    }
+  }
   // 最初のフレームで詳細な形式情報をログ出力
   if (!format_logged) {
     RCLCPP_INFO(this->get_logger(), 
