@@ -183,22 +183,23 @@ void CameraFlexNode::captureLoop()
     std::string type_str;
     switch(frame.type()) {
       case CV_8UC1: type_str = "CV_8UC1 (GRAY)"; break;
-      case CV_8UC3: type_str = "CV_8UC3 (RGB or BGR)"; break;
-      case CV_8UC4: type_str = "CV_8UC4 (RGBA or BGRA)"; break;
+      case CV_8UC3: type_str = "CV_8UC3 (BGR)"; break;
+      case CV_8UC4: type_str = "CV_8UC4 (BGRA)"; break;
       default: type_str = "Unknown type: " + std::to_string(frame.type()); break;
     }
     RCLCPP_INFO(this->get_logger(), "Frame type: %s", type_str.c_str());
     
-    // RGB入力であることを明示
-    RCLCPP_INFO(this->get_logger(), "Assuming sRGB input format - will convert RGB to BGR for OpenCV processing");
+    // OpenCVのVideoCapture出力は通常BGRであることを明示
+    RCLCPP_INFO(this->get_logger(), "OpenCV VideoCapture output is BGR format - no RGB2BGR conversion needed");
     
     format_logged = true;
   }
   
-  // RGB to BGR変換（sRGB入力の場合）
+  // OpenCVのVideoCaptureは通常BGRで出力するため、変換不要
   cv::Mat bgr_frame;
   if (frame.channels() == 3) {
-    cv::cvtColor(frame, bgr_frame, cv::COLOR_RGB2BGR);
+    // BGR形式として直接使用（RGB→BGR変換を削除）
+    bgr_frame = frame.clone();
   } else if (frame.channels() == 1) {
     // グレースケールの場合はそのまま使用
     bgr_frame = frame.clone();
