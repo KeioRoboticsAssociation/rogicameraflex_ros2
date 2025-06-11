@@ -50,6 +50,8 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions &options)
   cap_.set(cv::CAP_PROP_FRAME_WIDTH, width_);
   cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height_);
   cap_.set(cv::CAP_PROP_FPS, fps_);
+  // BGR形式で取得するように指定
+  cap_.set(cv::CAP_PROP_CONVERT_RGB, 1);
 
   // カメラの色空間情報を取得・表示
   double fourcc = cap_.get(cv::CAP_PROP_FOURCC);
@@ -205,8 +207,8 @@ void CameraFlexNode::captureLoop() {
     RCLCPP_INFO(this->get_logger(), "Frame type: %s", type_str.c_str());
 
     // OpenCVのVideoCapture出力は通常BGRであることを明示
-    RCLCPP_INFO(this->get_logger(), "OpenCV VideoCapture output is BGR format "
-                                    "- no RGB2BGR conversion needed");
+    RCLCPP_INFO(this->get_logger(),
+                "OpenCV VideoCapture output is BGR format (CAP_PROP_CONVERT_RGB=1)");
 
     format_logged = true;
   }
@@ -214,7 +216,7 @@ void CameraFlexNode::captureLoop() {
   // OpenCVのVideoCaptureは通常BGRで出力するため、変換不要
   cv::Mat bgr_frame;
   if (frame.channels() == 3) {
-    // BGR形式として直接使用（RGB→BGR変換を削除）
+    // BGR形式として直接使用
     bgr_frame = frame.clone();
   } else if (frame.channels() == 1) {
     // グレースケールの場合はそのまま使用
@@ -313,14 +315,13 @@ cv::Mat CameraFlexNode::applyOperations(const cv::Mat &frame,
 
       if (enc == "HSV") {
         if (result.channels() == 3) {
-          // RGBからBGRへ変換してからHSVへ変換
-          cv::cvtColor(result, result, cv::COLOR_RGB2BGR);
+          // BGRからHSVへ変換（カメラ入力はBGRを想定）
           cv::cvtColor(result, result, cv::COLOR_BGR2HSV);
 
           if (!hsv_conversion_logged) {
             RCLCPP_INFO(
                 this->get_logger(),
-                "Applied RGB->BGR->HSV conversion. Result: %dx%d, %d channels",
+                "Applied BGR->HSV conversion. Result: %dx%d, %d channels",
                 result.cols, result.rows, result.channels());
 
             // サンプルピクセルでの変換確認（デバッグ用）
