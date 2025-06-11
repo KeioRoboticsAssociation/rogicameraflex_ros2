@@ -274,9 +274,9 @@ void CameraFlexNode::captureLoop()
       cv::cvtColor(frame, rgb_frame, cv::COLOR_BGR2RGB);
       cv::imwrite("/tmp/debug_bgr2rgb.jpg", rgb_frame);
       
-      // RGB->BGR変換して保存
+      // RGB->BGR変換して保存 (round-trip 確認用)
       cv::Mat bgr_frame;
-      cv::cvtColor(frame, bgr_frame, cv::COLOR_RGB2BGR);
+      cv::cvtColor(rgb_frame, bgr_frame, cv::COLOR_RGB2BGR);
       cv::imwrite("/tmp/debug_rgb2bgr.jpg", bgr_frame);
       
       RCLCPP_INFO(this->get_logger(), 
