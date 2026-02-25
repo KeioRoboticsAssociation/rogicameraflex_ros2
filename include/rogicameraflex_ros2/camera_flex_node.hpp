@@ -1,54 +1,43 @@
 #ifndef ROGICAMERAFLEX_ROS2_CAMERA_FLEX_NODE_HPP_
 #define ROGICAMERAFLEX_ROS2_CAMERA_FLEX_NODE_HPP_
 
+#include "rogicameraflex_ros2/config_loader.hpp"
+#include "rogicameraflex_ros2/camera_capture.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <image_transport/image_transport.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <cv_bridge/cv_bridge.h>
-#include <opencv2/opencv.hpp>
-#include <yaml-cpp/yaml.h>
 #include <string>
 #include <vector>
 #include <memory>
 
-// 単一の画像処理操作を表現
-struct Operation {
-  std::string type;      // "crop", "resize", "color_convert", etc.
-  YAML::Node params;     // パラメータ節（offset や encoding など）
-};
+namespace rogicameraflex {
 
-// トピックごとのパイプライン情報
-struct Pipeline {
-  std::string name;
-  std::string topic;
-  std::vector<Operation> operations;
+struct ActivePipeline {
+  PipelineConfig config;
   image_transport::Publisher publisher;
 };
 
-class CameraFlexNode : public rclcpp::Node
-{
+class CameraFlexNode : public rclcpp::Node {
 public:
-  explicit CameraFlexNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
-  ~CameraFlexNode();
+  explicit CameraFlexNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+  ~CameraFlexNode() override;
 
 private:
-  void initialize();  // 初期化メソッドを追加
+  void initialize();
   void captureLoop();
-  cv::Mat applyOperations(const cv::Mat & frame, const std::vector<Operation> & ops);
 
-  cv::VideoCapture cap_;
-  std::vector<Pipeline> pipelines_;
+  NodeConfig config_;
+  CameraCapture camera_;
+  std::vector<ActivePipeline> pipelines_;
+
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::TimerBase::SharedPtr init_timer_;  // 初期化用タイマー
-  std::shared_ptr<image_transport::ImageTransport> it_;  // ImageTransportをメンバ変数に
+  rclcpp::TimerBase::SharedPtr init_timer_;
+  std::shared_ptr<image_transport::ImageTransport> it_;
 
-  // カメラ設定
-  std::string frame_id_;
-  int width_;
-  int height_;
-  int fps_;
-  int queue_size_;
-  bool initialized_ = false;  // 初期化フラグ
+  int frame_count_ = 0;
+  bool format_logged_ = false;
+  bool initialized_ = false;
 };
+
+}  // namespace rogicameraflex
 
 #endif  // ROGICAMERAFLEX_ROS2_CAMERA_FLEX_NODE_HPP_
