@@ -1,26 +1,14 @@
 #include "rogicameraflex_ros2/image_pipeline.hpp"
 #include <opencv2/imgproc.hpp>
+#include <rclcpp/logging.hpp>
 #include <algorithm>
 
 namespace rogicameraflex {
 
-static std::string determine_encoding(const cv::Mat& img,
-    const std::vector<OperationConfig>& ops) {
-  // Check if any operation converted to HSV
-  for (const auto& op : ops) {
-    if (op.type == "color_convert" && op.encoding == "HSV") {
-      return "8UC3";
-    }
-  }
-  if (img.channels() == 1) {
-    return "mono8";
-  }
-  return "bgr8";
-}
-
 PipelineResult apply_operations(const cv::Mat& frame,
     const std::vector<OperationConfig>& ops) {
   cv::Mat result = frame.clone();
+  std::string encoding = (result.channels() == 1) ? "mono8" : "bgr8";
 
   for (const auto& op : ops) {
     if (op.type == "crop") {
@@ -41,13 +29,22 @@ PipelineResult apply_operations(const cv::Mat& frame,
     } else if (op.type == "color_convert") {
       if (op.encoding == "HSV" && result.channels() == 3) {
         cv::cvtColor(result, result, cv::COLOR_BGR2HSV);
+        encoding = "8UC3";
       } else if (op.encoding == "GRAY" && result.channels() == 3) {
         cv::cvtColor(result, result, cv::COLOR_BGR2GRAY);
+        encoding = "mono8";
+      } else if (op.encoding != "HSV" && op.encoding != "GRAY") {
+        RCLCPP_WARN(rclcpp::get_logger("image_pipeline"),
+            "Unknown color_convert encoding: '%s', skipping", op.encoding.c_str());
       }
+
+    } else {
+      RCLCPP_WARN(rclcpp::get_logger("image_pipeline"),
+          "Unknown operation type: '%s', skipping", op.type.c_str());
     }
   }
 
-  return {result, determine_encoding(result, ops)};
+  return {result, encoding};
 }
 
 }  // namespace rogicameraflex

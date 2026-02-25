@@ -5,6 +5,7 @@
 #include "rogicameraflex_ros2/camera_capture.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <image_transport/image_transport.hpp>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -31,9 +32,10 @@ private:
 
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr init_timer_;
-  std::shared_ptr<image_transport::ImageTransport> it_;
+  std::shared_ptr<image_transport::ImageTransport> image_transport_;
 
-  int frame_count_ = 0;
+  uint64_t frame_count_ = 0;
+  uint32_t consecutive_capture_failures_ = 0;
   bool format_logged_ = false;
   bool initialized_ = false;
 };

@@ -3,8 +3,16 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cv_bridge/cv_bridge.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <cinttypes>
 
 namespace rogicameraflex {
+
+static constexpr int kLogIntervalFrames = 30;
+static constexpr int kMinReportedFps = 10;
+static constexpr int kInitDelayMs = 100;
+static constexpr int kInitialLogFrames = 3;
+static constexpr int kErrorThrottleMs = 5000;
+static constexpr uint32_t kMaxConsecutiveCaptureFailures = 150;
 
 CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions& options)
     : Node("rogicameraflex_ros2", options) {
@@ -13,7 +21,9 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions& options)
   try {
     default_path = ament_index_cpp::get_package_share_directory("rogicameraflex_ros2")
         + "/config/config.yaml";
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(this->get_logger(),
+        "Could not resolve package share directory: %s", e.what());
     default_path = "";
   }
 
@@ -44,8 +54,15 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions& options)
       cam_info.actual_fps, config_.camera.fps);
   RCLCPP_INFO(this->get_logger(), "Camera FOURCC: %s", cam_info.fourcc_str.c_str());
 
-  // Use actual FPS if reasonable, otherwise keep requested
-  if (cam_info.actual_fps >= 10) {
+  if (cam_info.actual_width != config_.camera.width
+      || cam_info.actual_height != config_.camera.height) {
+    RCLCPP_WARN(this->get_logger(),
+        "Camera resolution mismatch: requested %dx%d, got %dx%d",
+        config_.camera.width, config_.camera.height,
+        cam_info.actual_width, cam_info.actual_height);
+  }
+
+  if (cam_info.actual_fps >= kMinReportedFps) {
     config_.camera.fps = cam_info.actual_fps;
   } else {
     RCLCPP_WARN(this->get_logger(),
@@ -61,7 +78,7 @@ CameraFlexNode::CameraFlexNode(const rclcpp::NodeOptions& options)
   }
 
   // Deferred init — ImageTransport needs shared_from_this()
-  init_timer_ = this->create_wall_timer(std::chrono::milliseconds(100),
+  init_timer_ = this->create_wall_timer(std::chrono::milliseconds(kInitDelayMs),
       std::bind(&CameraFlexNode::initialize, this));
 }
 
@@ -74,10 +91,10 @@ void CameraFlexNode::initialize() {
   init_timer_->cancel();
   init_timer_.reset();
 
-  it_ = std::make_shared<image_transport::ImageTransport>(shared_from_this());
+  image_transport_ = std::make_shared<image_transport::ImageTransport>(shared_from_this());
 
   for (auto& pipe : pipelines_) {
-    pipe.publisher = it_->advertise(pipe.config.topic, config_.queue_size);
+    pipe.publisher = image_transport_->advertise(pipe.config.topic, config_.queue_size);
     RCLCPP_INFO(this->get_logger(), "Created publisher for topic: %s",
         pipe.config.topic.c_str());
   }
@@ -114,9 +131,21 @@ CameraFlexNode::~CameraFlexNode() {
 void CameraFlexNode::captureLoop() {
   cv::Mat frame;
   if (!camera_.read(frame)) {
-    RCLCPP_WARN(this->get_logger(), "Failed to capture frame");
+    ++consecutive_capture_failures_;
+    if (consecutive_capture_failures_ >= kMaxConsecutiveCaptureFailures) {
+      RCLCPP_ERROR(this->get_logger(),
+          "Camera capture failed %u consecutive times, stopping capture",
+          consecutive_capture_failures_);
+      timer_->cancel();
+      return;
+    }
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), kErrorThrottleMs,
+        "Failed to capture frame (consecutive failures: %u)",
+        consecutive_capture_failures_);
     return;
   }
+  consecutive_capture_failures_ = 0;
+
   if (frame.empty()) {
     RCLCPP_WARN(this->get_logger(), "Captured frame is empty");
     return;
@@ -129,9 +158,8 @@ void CameraFlexNode::captureLoop() {
     format_logged_ = true;
   }
 
-  // 30フレームごとにログ出力
-  if (++frame_count_ % 30 == 0) {
-    RCLCPP_INFO(this->get_logger(), "Processed frame %d: %dx%d",
+  if (++frame_count_ % kLogIntervalFrames == 0) {
+    RCLCPP_INFO(this->get_logger(), "Processed frame %" PRIu64 ": %dx%d",
         frame_count_, frame.cols, frame.rows);
   }
 
@@ -147,14 +175,14 @@ void CameraFlexNode::captureLoop() {
           .toImageMsg();
       pipe.publisher.publish(img_msg);
 
-      if (frame_count_ <= 3) {
+      if (frame_count_ <= kInitialLogFrames) {
         RCLCPP_INFO(this->get_logger(),
             "Published frame to %s (encoding: %s, size: %dx%d)",
             pipe.config.topic.c_str(), result.encoding.c_str(),
             result.image.cols, result.image.rows);
       }
     } catch (const std::exception& e) {
-      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), kErrorThrottleMs,
           "Failed to publish on topic %s: %s",
           pipe.config.topic.c_str(), e.what());
     }
